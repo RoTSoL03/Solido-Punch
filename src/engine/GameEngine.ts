@@ -24,6 +24,7 @@ import type {
   Point3,
   TrackedFist,
 } from '../types'
+import { StartupError } from './startupError'
 
 interface EngineElements {
   video: HTMLVideoElement
@@ -102,12 +103,23 @@ export class GameEngine {
     this.setPhase('requesting')
     try {
       await this.camera.start(this.elements.video)
+    } catch (error) {
+      this.failStartup(new StartupError('camera', error))
+      return
+    }
+
+    try {
       await this.vision.initialize()
       this.beginHandCheck()
     } catch (error) {
-      this.setPhase('error')
-      this.callbacks.onError(error)
+      this.camera.stop()
+      this.failStartup(new StartupError('tracking', error))
     }
+  }
+
+  private failStartup(error: StartupError): void {
+    this.setPhase('error')
+    this.callbacks.onError(error)
   }
 
   startKeyboardTraining(): void {

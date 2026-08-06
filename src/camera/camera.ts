@@ -28,7 +28,13 @@ export class CameraController {
       })
     }
     video.srcObject = this.stream
-    await video.play()
+    try {
+      await video.play()
+    } catch (error) {
+      video.srcObject = null
+      this.stop()
+      throw error
+    }
   }
 
   async switch(video: HTMLVideoElement): Promise<FacingMode> {

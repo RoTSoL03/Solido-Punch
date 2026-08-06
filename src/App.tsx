@@ -28,6 +28,7 @@ import { friendlyCameraError } from './camera/camera'
 import { IconButton } from './components/IconButton'
 import { GAME_CONFIG } from './config'
 import type { GameEngine } from './engine/GameEngine'
+import { describeStartupError } from './engine/startupError'
 import type { GamePhase, HudSnapshot } from './types'
 
 const EMPTY_HUD: HudSnapshot = {
@@ -78,6 +79,7 @@ export default function App() {
   const [hud, setHud] = useState(EMPTY_HUD)
   const [countdown, setCountdown] = useState(3)
   const [error, setError] = useState('')
+  const [errorTitle, setErrorTitle] = useState('We couldn’t open the camera')
   const [facing, setFacing] = useState<'user' | 'environment'>('user')
   const [sound, setSound] = useState(true)
   const [debug, setDebug] = useState(false)
@@ -136,7 +138,11 @@ export default function App() {
             lastCountdownRef.current = value
             if (soundRef.current) playCountdownSound(value)
           },
-          onError: (value) => setError(friendlyCameraError(value)),
+          onError: (value) => {
+            const description = describeStartupError(value)
+            setErrorTitle(description.title)
+            setError(description.message)
+          },
           onImpact: handleImpact,
         })
         engineRef.current = engine
@@ -160,6 +166,7 @@ export default function App() {
         setError(
           'The game engine could not load. Refresh the page and try again.',
         )
+        setErrorTitle('We couldn’t load the game')
         setPhase('error')
       })
 
@@ -189,7 +196,10 @@ export default function App() {
     void engineRef.current
       ?.switchCamera()
       .then(setFacing)
-      .catch((value) => setError(friendlyCameraError(value)))
+      .catch((value) => {
+        setErrorTitle('We couldn’t switch the camera')
+        setError(friendlyCameraError(value))
+      })
   }
 
   const keyboardTraining = () => {
@@ -448,8 +458,8 @@ export default function App() {
             <Camera size={26} />
             <span />
           </div>
-          <span className="eyebrow">CAMERA UNAVAILABLE</span>
-          <h2>We couldn’t open the camera</h2>
+          <span className="eyebrow">TRAINING UNAVAILABLE</span>
+          <h2>{errorTitle}</h2>
           <p>{error}</p>
           <div className="error-actions">
             <button
