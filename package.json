@@ -36,7 +36,7 @@
     "vitest": "^4.1.10"
   },
   "dependencies": {
-    "@dimforge/rapier3d-compat": "^0.19.3",
+    "@dimforge/rapier3d-compat": "^0.20.0",
     "@mediapipe/tasks-vision": "1.0.1",
     "lucide-react": "^1.27.0",
     "react": "^19.2.8",
