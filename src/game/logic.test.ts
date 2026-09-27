@@ -10,11 +10,13 @@ import { GAME_CONFIG } from '../config'
 import { getBonusSpawnProfile } from './bonusSpawning'
 import { findAutomaticPunchTarget, findHazardContact } from './collision'
 import {
+  applyDamage,
   scoreHit,
   createRoundState,
   getDifficulty,
   getRoundDurationSeconds,
   getScoreMultiplier,
+  hasActiveShield,
   missTarget,
 } from './rules'
 import { videoPointToView } from '../math/coordinates'
@@ -514,6 +516,33 @@ describe('round rules', () => {
     expect(findAutomaticPunchTarget(hand, [hazard])).toBeUndefined()
   })
 
+  it('does not damage from a swept path when the current hand misses a hazard', () => {
+    const movingHand: TrackedFist = {
+      id: 44,
+      handedness: 'Left',
+      previousCenter: { x: 0.2, y: 0.5 },
+      center: { x: 0.8, y: 0.5 },
+      radius: 0.06,
+      isFist: false,
+      speed: 2,
+      confidence: 0.9,
+      phase: 'idle',
+      orientation: { x: 0, y: 0, z: 0 },
+    }
+    expect(
+      findHazardContact(movingHand, [
+        {
+          id: 45,
+          kind: 'hazard',
+          x: 0.5,
+          y: 0.5,
+          radius: 0.05,
+          hit: false,
+        },
+      ]),
+    ).toBeUndefined()
+  })
+
   it('never treats a red hazard as a normal punch target', () => {
     const punchingHand: TrackedFist = {
       id: 5,
@@ -604,6 +633,20 @@ describe('round rules', () => {
     expect(state.lives).toBe(GAME_CONFIG.maxLives)
   })
 
+  it('uses a shield to block exactly one life loss before expiry', () => {
+    const state = createRoundState()
+    scoreHit(state, 30, 'shield', 1000)
+    expect(hasActiveShield(state, 10_999)).toBe(true)
+    expect(applyDamage(state, 2000)).toBe(false)
+    expect(state.lives).toBe(GAME_CONFIG.startingLives)
+    expect(applyDamage(state, 2001)).toBe(true)
+    expect(state.lives).toBe(GAME_CONFIG.startingLives - 1)
+
+    scoreHit(state, 31, 'shield', 3000)
+    expect(applyDamage(state, 13_000)).toBe(true)
+    expect(state.lives).toBe(GAME_CONFIG.startingLives - 2)
+  })
+
   it('does not penalize missed bonuses or reset the combo', () => {
     const state = createRoundState()
     state.combo = 4
@@ -613,6 +656,9 @@ describe('round rules', () => {
       'time7',
       'time10',
       'heart',
+      'shield',
+      'speedAttack',
+      'hazardAttack',
     ] as const)
       missTarget(state, kind)
     expect(state.lives).toBe(GAME_CONFIG.startingLives)

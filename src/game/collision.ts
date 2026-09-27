@@ -1,7 +1,8 @@
 import type { TargetSnapshot, TrackedFist } from '../types'
 
 const FIST_HITBOX_SCALE = 1.14
-const HAND_HAZARD_SCALE = 1.22
+export const HAND_HAZARD_SCALE = 0.55
+export const HAZARD_HITBOX_SCALE = 0.85
 const TARGET_HITBOX_SCALE = 1.08
 const CONTACT_PADDING = 0.008
 
@@ -54,16 +55,16 @@ export function findHazardContact(
   hand: TrackedFist,
   targets: TargetSnapshot[],
 ): TargetSnapshot | undefined {
-  const start = hand.previousCenter ?? hand.center
   let closest: TargetSnapshot | undefined
   let closestContact = Infinity
   for (const target of targets) {
     if (target.hit || target.kind !== 'hazard') continue
-    const contactDistance = distanceToSegment(target, start, hand.center)
+    const contactDistance = Math.hypot(
+      target.x - hand.center.x,
+      target.y - hand.center.y,
+    )
     const contactRadius =
-      hand.radius * HAND_HAZARD_SCALE +
-      target.radius * TARGET_HITBOX_SCALE +
-      CONTACT_PADDING
+      hand.radius * HAND_HAZARD_SCALE + target.radius * HAZARD_HITBOX_SCALE
     if (contactDistance > contactRadius || contactDistance >= closestContact)
       continue
     closest = target

@@ -41,9 +41,11 @@ export class PunchTracker {
   private states = new Map<number, HandState>()
   private nextId = 1
 
+  constructor(private readonly maximumHands: number = GAME_CONFIG.maxHands) {}
+
   update(observations: HandObservation[], now: number): TrackedFist[] {
     for (const state of this.states.values()) state.seen = false
-    const visibleObservations = observations.slice(0, GAME_CONFIG.maxHands)
+    const visibleObservations = observations.slice(0, this.maximumHands)
     const rawCenters = visibleObservations.map((observation) =>
       getFistCenter(observation.landmarks),
     )

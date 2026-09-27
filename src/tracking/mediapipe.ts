@@ -6,10 +6,8 @@ import { GAME_CONFIG } from '../config'
 import { getPerformanceProfile } from '../performance/profile'
 import type { HandObservation } from '../types'
 
-const VERSION = '1.0.1'
-const WASM_ROOT = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${VERSION}/wasm`
-const MODEL_URL =
-  'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task'
+const WASM_ROOT = `${import.meta.env.BASE_URL}mediapipe/wasm`
+const MODEL_URL = `${import.meta.env.BASE_URL}mediapipe/models/hand_landmarker.task`
 
 export class HandVision {
   private readonly profile = getPerformanceProfile()
@@ -27,6 +25,9 @@ export class HandVision {
   private detectionInterval = this.minimumInterval
   private inputScale = 1
   private slowInferenceFrames = 0
+  private inferenceSamples: Array<{ at: number; duration: number }> = []
+
+  constructor(private maximumHands: number = GAME_CONFIG.maxHands) {}
 
   initialize(): Promise<void> {
     if (this.landmarker) return Promise.resolve()
@@ -47,7 +48,7 @@ export class HandVision {
     const options = (delegate: 'GPU' | 'CPU') => ({
       baseOptions: { modelAssetPath: MODEL_URL, delegate },
       runningMode: 'VIDEO' as const,
-      numHands: 2,
+      numHands: this.maximumHands,
       minHandDetectionConfidence: GAME_CONFIG.vision.minDetectionConfidence,
       minHandPresenceConfidence: GAME_CONFIG.vision.minPresenceConfidence,
       minTrackingConfidence: GAME_CONFIG.vision.minTrackingConfidence,
@@ -81,6 +82,9 @@ export class HandVision {
     const input = this.prepareInput(video)
     const result = this.landmarker.detectForVideo(input, timestamp)
     const inferenceMs = performance.now() - startedAt
+    this.inferenceSamples.push({ at: timestamp, duration: inferenceMs })
+    const cutoff = timestamp - 5000
+    while (this.inferenceSamples[0]?.at < cutoff) this.inferenceSamples.shift()
     this.adaptInputResolution(video, inferenceMs)
     const sustainableInterval = Math.max(
       this.minimumInterval,
@@ -93,6 +97,28 @@ export class HandVision {
     this.nextDetectionAt =
       timestamp + Math.max(this.minimumInterval, this.detectionInterval - 4)
     return this.toObservations(result)
+  }
+
+  getAverageInferenceMs(windowMs = 3000, now = performance.now()): number {
+    const samples = this.inferenceSamples.filter(
+      (sample) => sample.at >= now - windowMs,
+    )
+    if (samples.length === 0) return 0
+    return (
+      samples.reduce((sum, sample) => sum + sample.duration, 0) / samples.length
+    )
+  }
+
+  async reconfigure(maximumHands: number): Promise<void> {
+    if (maximumHands === this.maximumHands && this.landmarker) return
+    this.landmarker?.close()
+    this.landmarker = null
+    this.initialization = null
+    this.maximumHands = maximumHands
+    this.lastVideoTime = -1
+    this.nextDetectionAt = 0
+    this.inferenceSamples = []
+    await this.initialize()
   }
 
   private prepareInput(video: HTMLVideoElement): TexImageSource {
@@ -164,5 +190,6 @@ export class HandVision {
     this.detectionInterval = this.minimumInterval
     this.inputScale = 1
     this.slowInferenceFrames = 0
+    this.inferenceSamples = []
   }
 }

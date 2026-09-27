@@ -18,13 +18,19 @@ export class FistModelOverlay {
   async initialize(): Promise<void> {
     try {
       const response = await fetch(GAME_CONFIG.fistModel.url, {
-        method: 'HEAD',
+        cache: 'force-cache',
       })
-      const contentType = response.headers.get('content-type') ?? ''
-      if (!response.ok || contentType.includes('text/html') || this.disposed)
-        return
+      if (!response.ok || this.disposed) return
 
-      const gltf = await new GLTFLoader().loadAsync(GAME_CONFIG.fistModel.url)
+      const modelBytes = await response.arrayBuffer()
+      const signature = new TextDecoder().decode(
+        new Uint8Array(modelBytes, 0, Math.min(4, modelBytes.byteLength)),
+      )
+      if (signature !== 'glTF' || this.disposed) return
+
+      const modelUrl = new URL(GAME_CONFIG.fistModel.url, window.location.href)
+      const basePath = new URL('.', modelUrl).href
+      const gltf = await new GLTFLoader().parseAsync(modelBytes, basePath)
       if (this.disposed) return
       const model = gltf.scene
       const bounds = new THREE.Box3().setFromObject(model)

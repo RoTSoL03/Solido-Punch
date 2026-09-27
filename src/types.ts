@@ -1,5 +1,8 @@
 import type { TargetKind } from './config'
 
+export type PunchMode = 'solo' | 'versus'
+export type PlayerLane = 'left' | 'right'
+
 export interface Point3 {
   x: number
   y: number
@@ -40,6 +43,7 @@ export interface TargetSnapshot {
   y: number
   radius: number
   hit: boolean
+  lane?: PlayerLane
 }
 
 export interface HudSnapshot {
@@ -53,6 +57,28 @@ export interface HudSnapshot {
   activeTargets: number
   scoreMultiplier: 1 | 2
   multiplierTime: number
+  shieldActive: boolean
+  shieldTime: number
+}
+
+export interface VersusPlayerSnapshot {
+  lane: PlayerLane
+  score: number
+  combo: number
+  lives: number
+  shieldActive: boolean
+  shieldTime: number
+  speedAttackTime: number
+  pendingHazards: number
+  hands: TrackedFist[]
+}
+
+export interface VersusHudSnapshot {
+  players: Record<PlayerLane, VersusPlayerSnapshot>
+  fps: number
+  activeTargets: number
+  trackingMode: 'four-hands' | 'one-fist'
+  winner: PlayerLane | 'draw' | null
 }
 
 export type GamePhase =

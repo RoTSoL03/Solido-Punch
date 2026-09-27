@@ -1,7 +1,7 @@
 import { HAND_CONNECTIONS } from '../config'
 import { distance } from '../math/coordinates'
 import { getPerformanceProfile } from '../performance/profile'
-import type { HandObservation, TrackedFist } from '../types'
+import type { HandObservation, TargetSnapshot, TrackedFist } from '../types'
 import { getFistCenter } from '../tracking/fist'
 
 export function shouldDrawSkeleton(
@@ -22,6 +22,7 @@ export function drawHands(
   hands: HandObservation[],
   fists: TrackedFist[],
   hasFistModels: boolean,
+  debugTargets: TargetSnapshot[] = [],
 ): void {
   const context = canvas.getContext('2d', {
     alpha: true,
@@ -95,4 +96,38 @@ export function drawHands(
       context.globalAlpha = 1
     }
   })
+
+  if (debugTargets.length > 0) {
+    const scale = Math.min(width, height)
+    context.setLineDash([5, 5])
+    context.lineWidth = 2
+    context.globalAlpha = 0.9
+    for (const target of debugTargets) {
+      if (target.kind !== 'hazard' || target.hit) continue
+      context.strokeStyle = '#ff536f'
+      context.beginPath()
+      context.arc(
+        target.x * width,
+        target.y * height,
+        target.radius * 0.85 * scale,
+        0,
+        Math.PI * 2,
+      )
+      context.stroke()
+    }
+    for (const fist of fists) {
+      context.strokeStyle = '#5ee7ff'
+      context.beginPath()
+      context.arc(
+        fist.center.x * width,
+        fist.center.y * height,
+        fist.radius * 0.55 * scale,
+        0,
+        Math.PI * 2,
+      )
+      context.stroke()
+    }
+    context.setLineDash([])
+    context.globalAlpha = 1
+  }
 }

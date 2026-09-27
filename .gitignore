@@ -17,6 +17,10 @@ dist-ssr
 .vite
 coverage
 *.tsbuildinfo
+src-tauri/target
+src-tauri/gen
+scripts/windows-sdk/bin
+scripts/windows-sdk/obj
 
 # Editor directories and files
 .vscode/*

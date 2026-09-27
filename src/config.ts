@@ -62,6 +62,7 @@ export const GAME_CONFIG = {
   },
   bonuses: {
     multiplierDurationMs: 3000,
+    shieldDurationMs: 10_000,
     urgentTimeThresholdSeconds: 20,
     urgentTimeBonusChance: 0.09,
     lowLifeBonusChance: 0.09,
@@ -76,6 +77,25 @@ export const GAME_CONFIG = {
     time7: { points: 0, color: 0x45cfff, radius: 0.08 },
     time10: { points: 0, color: 0xa879ff, radius: 0.084 },
     heart: { points: 0, color: 0xff5e85, radius: 0.08 },
+    shield: { points: 0, color: 0x5ee7ff, radius: 0.082 },
+    speedAttack: { points: 0, color: 0xffa42d, radius: 0.082 },
+    hazardAttack: { points: 0, color: 0xff536f, radius: 0.082 },
+  },
+  versus: {
+    startingLives: 3,
+    centerDeadZone: 0.06,
+    readinessHoldMs: 500,
+    difficultyRampSeconds: 60,
+    maximumTargetsPerLane: 6,
+    itemChance: 0.1,
+    itemCooldownMs: 6000,
+    speedAttackMultiplier: 1.5,
+    speedAttackDurationMs: 3000,
+    hazardBarrageCount: 2,
+    performanceWarmupMs: 3000,
+    performanceWindowMs: 3000,
+    maximumInferenceMs: 65,
+    minimumRenderFps: 20,
   },
   fistModel: {
     url: `${import.meta.env.BASE_URL}models/fist.glb`,
@@ -99,12 +119,29 @@ export const BONUS_TARGET_KINDS = [
   'time7',
   'time10',
   'heart',
+  'shield',
 ] as const satisfies readonly TargetKind[]
 
 export type BonusTargetKind = (typeof BONUS_TARGET_KINDS)[number]
 
 export function isBonusTarget(kind: TargetKind): kind is BonusTargetKind {
   return (BONUS_TARGET_KINDS as readonly TargetKind[]).includes(kind)
+}
+
+export const COMPETITIVE_ITEM_KINDS = [
+  'speedAttack',
+  'hazardAttack',
+  'shield',
+] as const satisfies readonly TargetKind[]
+
+export type CompetitiveItemKind = (typeof COMPETITIVE_ITEM_KINDS)[number]
+export type PowerupTargetKind = BonusTargetKind | CompetitiveItemKind
+
+export function isPowerupTarget(kind: TargetKind): kind is PowerupTargetKind {
+  return (
+    isBonusTarget(kind) ||
+    (COMPETITIVE_ITEM_KINDS as readonly TargetKind[]).includes(kind)
+  )
 }
 
 export function getTimeBonusSeconds(kind: TargetKind): number {

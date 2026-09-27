@@ -1,7 +1,7 @@
 import {
   GAME_CONFIG,
   getTimeBonusSeconds,
-  isBonusTarget,
+  isPowerupTarget,
   type TargetKind,
 } from '../config'
 
@@ -12,6 +12,8 @@ export interface RoundState {
   lives: number
   timeBonusSeconds: number
   scoreMultiplierUntil: number
+  shieldCharges: number
+  shieldUntil: number
   hitTargets: Set<number>
 }
 
@@ -22,6 +24,8 @@ export const createRoundState = (): RoundState => ({
   lives: GAME_CONFIG.startingLives,
   timeBonusSeconds: 0,
   scoreMultiplierUntil: 0,
+  shieldCharges: 0,
+  shieldUntil: 0,
   hitTargets: new Set(),
 })
 
@@ -34,7 +38,7 @@ export function scoreHit(
   if (state.hitTargets.has(targetId)) return false
   state.hitTargets.add(targetId)
   if (kind === 'hazard') {
-    state.lives = Math.max(0, state.lives - 1)
+    applyDamage(state, now)
     state.combo = 0
     return true
   }
@@ -51,6 +55,11 @@ export function scoreHit(
     state.lives = Math.min(GAME_CONFIG.maxLives, state.lives + 1)
     return true
   }
+  if (kind === 'shield') {
+    state.shieldCharges = 1
+    state.shieldUntil = now + GAME_CONFIG.bonuses.shieldDurationMs
+    return true
+  }
   state.combo += 1
   state.bestCombo = Math.max(state.bestCombo, state.combo)
   const base = GAME_CONFIG.targetTypes[kind].points
@@ -62,9 +71,25 @@ export function scoreHit(
   return true
 }
 
-export function missTarget(state: RoundState, kind: TargetKind): void {
-  if (kind === 'hazard' || isBonusTarget(kind)) return
+export function applyDamage(state: RoundState, now = 0): boolean {
+  if (state.shieldCharges > 0 && state.shieldUntil > now) {
+    state.shieldCharges = 0
+    state.shieldUntil = 0
+    return false
+  }
+  state.shieldCharges = 0
+  state.shieldUntil = 0
   state.lives = Math.max(0, state.lives - 1)
+  return true
+}
+
+export function hasActiveShield(state: RoundState, now: number): boolean {
+  return state.shieldCharges > 0 && state.shieldUntil > now
+}
+
+export function missTarget(state: RoundState, kind: TargetKind, now = 0): void {
+  if (kind === 'hazard' || isPowerupTarget(kind)) return
+  applyDamage(state, now)
   state.combo = 0
 }
 

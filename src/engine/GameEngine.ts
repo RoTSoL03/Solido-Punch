@@ -5,6 +5,7 @@ import {
   getDifficulty,
   getRoundDurationSeconds,
   getScoreMultiplier,
+  hasActiveShield,
   missTarget,
   scoreHit,
 } from '../game/rules'
@@ -61,6 +62,7 @@ export class GameEngine {
   private initialization: Promise<void> | null = null
   private demo = false
   private hiddenPause = false
+  private debugCollisions = false
   private lastObservations: HandObservation[] = []
   private lastFists: TrackedFist[] = []
   private resizeObserver: ResizeObserver
@@ -278,6 +280,7 @@ export class GameEngine {
           this.lastObservations,
           this.lastFists,
           this.targetScene.hasFistModels(),
+          this.debugCollisions ? this.targetScene.snapshots() : [],
         )
       } else if (!this.demo) {
         this.lastFists = this.punch.getTrackedFists(now)
@@ -310,7 +313,7 @@ export class GameEngine {
           remainingSeconds,
           this.round.lives,
           (kind) => {
-            if (!this.demo) missTarget(this.round, kind)
+            if (!this.demo) missTarget(this.round, kind, now)
             if (this.round.lives <= 0) this.endRound()
           },
         )
@@ -396,6 +399,10 @@ export class GameEngine {
       this.callbacks.onImpact(false)
   }
 
+  setDebug(enabled: boolean): void {
+    this.debugCollisions = enabled
+  }
+
   private emitHud(now: number, hands: TrackedFist[]): void {
     const effectiveNow = this.phase === 'paused' ? this.pausedAt : now
     const elapsed =
@@ -425,6 +432,10 @@ export class GameEngine {
               ),
             )
           : 0,
+      shieldActive: hasActiveShield(this.round, effectiveNow),
+      shieldTime: hasActiveShield(this.round, effectiveNow)
+        ? Math.max(0, Math.ceil((this.round.shieldUntil - effectiveNow) / 1000))
+        : 0,
     })
   }
 

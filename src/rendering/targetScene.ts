@@ -2,14 +2,14 @@ import type RAPIER from '@dimforge/rapier3d-compat'
 import * as THREE from 'three'
 import {
   GAME_CONFIG,
-  isBonusTarget,
-  type BonusTargetKind,
+  isPowerupTarget,
+  type PowerupTargetKind,
   type TargetKind,
 } from '../config'
 import { getBonusSpawnProfile, selectBonusKind } from '../game/bonusSpawning'
 import { getPerformanceProfile } from '../performance/profile'
 import { FixedStepAccumulator } from '../physics/fixedStep'
-import type { TargetSnapshot, TrackedFist } from '../types'
+import type { PlayerLane, TargetSnapshot, TrackedFist } from '../types'
 import { FistModelOverlay } from './fistModels'
 
 type RapierModule = (typeof import('@dimforge/rapier3d-compat'))['default']
@@ -17,12 +17,15 @@ type RapierModule = (typeof import('@dimforge/rapier3d-compat'))['default']
 let rapierImport: Promise<RapierModule> | null = null
 let rapierInitialization: Promise<void> | null = null
 
-const BONUS_LABELS: Record<BonusTargetKind, string> = {
+const BONUS_LABELS: Record<PowerupTargetKind, string> = {
   multiplier: '2×',
   time5: '+5',
   time7: '+7',
   time10: '+10',
   heart: '+1',
+  shield: 'SH',
+  speedAttack: '>>',
+  hazardAttack: '!!',
 }
 
 interface TargetEntity {
@@ -35,6 +38,8 @@ interface TargetEntity {
   hit: boolean
   hitAt: number
   active: boolean
+  lane?: PlayerLane
+  speedMultiplier: number
 }
 
 interface ParticleSlot {
@@ -73,7 +78,7 @@ export class TargetScene {
   private particlesActive = false
   private meshPool = new Map<TargetKind, THREE.Mesh[]>()
   private readonly bonusLabelMaterials = new Map<
-    BonusTargetKind,
+    PowerupTargetKind,
     THREE.SpriteMaterial
   >()
   private nextId = 1
@@ -149,7 +154,7 @@ export class TargetScene {
     gravity: number,
     remainingSeconds: number,
     lives: number,
-    onMiss: (kind: TargetKind) => void,
+    onMiss: (kind: TargetKind, lane?: PlayerLane) => void,
   ): void {
     this.world.gravity.y = gravity
     this.spawnClock += delta
@@ -176,7 +181,7 @@ export class TargetScene {
       target.mesh.rotation.x += delta * 1.8
       target.mesh.rotation.y += delta * 2.4
       if (position.y < -1.26) {
-        onMiss(target.kind)
+        onMiss(target.kind, target.lane)
         this.recycle(target)
       }
     }
@@ -222,6 +227,7 @@ export class TargetScene {
         y: (1 - position.y) / 2,
         radius: target.radius / 2,
         hit: target.hit,
+        lane: target.lane,
       }
     })
   }
@@ -250,6 +256,41 @@ export class TargetScene {
     )
   }
 
+  spawnForLane(
+    kind: TargetKind,
+    lane: PlayerLane,
+    speed: number,
+    speedMultiplier = 1,
+  ): void {
+    this.spawn(
+      1,
+      speed * speedMultiplier,
+      0,
+      3,
+      kind,
+      undefined,
+      lane,
+      speedMultiplier,
+    )
+  }
+
+  countLaneTargets(lane: PlayerLane): number {
+    return this.targets.filter((target) => target.lane === lane).length
+  }
+
+  setLaneSpeedMultiplier(lane: PlayerLane, multiplier: number): void {
+    for (const target of this.targets) {
+      if (target.lane !== lane || target.hit) continue
+      const ratio = multiplier / target.speedMultiplier
+      const velocity = target.body.linvel()
+      target.body.setLinvel(
+        { x: velocity.x, y: velocity.y * ratio, z: velocity.z },
+        true,
+      )
+      target.speedMultiplier = multiplier
+    }
+  }
+
   private spawn(
     elapsedRatio: number,
     speed: number,
@@ -257,6 +298,8 @@ export class TargetScene {
     lives: number,
     forcedKind?: TargetKind,
     forcedX?: number,
+    lane?: PlayerLane,
+    speedMultiplier = 1,
   ): void {
     const bonusProfile = getBonusSpawnProfile(remainingSeconds, lives)
     const roll = Math.random()
@@ -277,9 +320,17 @@ export class TargetScene {
     const radius = GAME_CONFIG.targetTypes[kind].radius
     const aspect =
       this.canvas.clientWidth / Math.max(this.canvas.clientHeight, 1)
-    let x = forcedX ?? (Math.random() * 1.65 - 0.825) * aspect
+    const laneRange =
+      lane === 'left'
+        ? ([0.08, 0.44] as const)
+        : lane === 'right'
+          ? ([0.56, 0.92] as const)
+          : ([0.0875, 0.9125] as const)
+    const randomLaneX =
+      laneRange[0] + Math.random() * (laneRange[1] - laneRange[0])
+    let x = forcedX ?? (randomLaneX - 0.5) * 2 * aspect
     const topTargets = this.targets.filter(
-      (target) => target.body.translation().y > 0.72,
+      (target) => target.body.translation().y > 0.72 && target.lane === lane,
     )
     for (let attempt = 0; attempt < 5; attempt += 1) {
       if (
@@ -290,7 +341,9 @@ export class TargetScene {
         )
       )
         break
-      x = (Math.random() * 1.65 - 0.825) * aspect
+      const nextLaneX =
+        laneRange[0] + Math.random() * (laneRange[1] - laneRange[0])
+      x = (nextLaneX - 0.5) * 2 * aspect
     }
     const body = this.world.createRigidBody(
       this.rapier.RigidBodyDesc.dynamic()
@@ -332,6 +385,8 @@ export class TargetScene {
       hit: false,
       hitAt: 0,
       active: true,
+      lane,
+      speedMultiplier,
     })
   }
 
@@ -366,7 +421,7 @@ export class TargetScene {
       )
       mesh.add(wire)
     }
-    if (isBonusTarget(kind)) mesh.add(this.createBonusLabel(kind, radius))
+    if (isPowerupTarget(kind)) mesh.add(this.createBonusLabel(kind, radius))
     return mesh
   }
 
@@ -376,7 +431,7 @@ export class TargetScene {
   ): THREE.BufferGeometry {
     if (kind === 'cube')
       return new THREE.BoxGeometry(radius * 1.6, radius * 1.6, radius * 1.6)
-    if (kind === 'crystal' || kind === 'heart')
+    if (kind === 'crystal' || kind === 'heart' || kind === 'shield')
       return new THREE.OctahedronGeometry(radius, 0)
     if (kind === 'hazard') return new THREE.IcosahedronGeometry(radius, 0)
     if (kind === 'multiplier')
@@ -391,11 +446,15 @@ export class TargetScene {
       geometry.rotateX(Math.PI / 2)
       return geometry
     }
+    if (kind === 'speedAttack')
+      return new THREE.ConeGeometry(radius * 0.82, radius * 1.5, 8)
+    if (kind === 'hazardAttack')
+      return new THREE.DodecahedronGeometry(radius, 0)
     return new THREE.SphereGeometry(radius, 20, 14)
   }
 
   private createBonusLabel(
-    kind: BonusTargetKind,
+    kind: PowerupTargetKind,
     radius: number,
   ): THREE.Sprite {
     let material = this.bonusLabelMaterials.get(kind)

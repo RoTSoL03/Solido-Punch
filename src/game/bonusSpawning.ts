@@ -27,6 +27,7 @@ export function getBonusSpawnProfile(
       time7: urgentTime ? 5 : 2,
       time10: urgentTime ? 3 : 1,
       heart: lowLife ? 8 : 1,
+      shield: lowLife ? 5 : 2,
     },
   }
 }

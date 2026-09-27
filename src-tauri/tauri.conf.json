@@ -1,0 +1,47 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "Solido DRRM Games",
+  "version": "0.1.0",
+  "identifier": "com.solido.drrm-games",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://127.0.0.1:5174",
+    "beforeDevCommand": "npm run dev:local",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Solido DRRM Games — Diagnostic",
+        "width": 1280,
+        "height": 720,
+        "minWidth": 960,
+        "minHeight": 540,
+        "center": true,
+        "resizable": true,
+        "fullscreen": false,
+        "useHttpsScheme": true,
+        "devtools": true,
+        "zoomHotkeysEnabled": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; base-uri 'self'; object-src 'none'; form-action 'self'; script-src 'self' 'wasm-unsafe-eval'; script-src-attr 'none'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' blob: ipc: http://ipc.localhost ws: wss:; worker-src 'self' blob:; manifest-src 'self'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "android": {
+      "debugApplicationIdSuffix": ".debug"
+    }
+  }
+}

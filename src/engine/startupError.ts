@@ -22,7 +22,7 @@ export function describeStartupError(error: unknown): StartupErrorDescription {
     return {
       title: 'Hand tracking couldn’t start',
       message:
-        'Your camera opened, but the hand-tracking engine could not load. Check your connection, then try again.',
+        'Your camera opened, but the local hand-tracking engine could not load. Restart the app, then try again.',
     }
   }
 

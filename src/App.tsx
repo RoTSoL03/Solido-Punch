@@ -3,6 +3,7 @@ import {
   CameraIcon,
   ChevronDown,
   Heart,
+  Home,
   Pause,
   Play,
   RefreshCw,
@@ -42,6 +43,8 @@ const EMPTY_HUD: HudSnapshot = {
   activeTargets: 0,
   scoreMultiplier: 1,
   multiplierTime: 0,
+  shieldActive: false,
+  shieldTime: 0,
 }
 
 const PHASE_COPY: Partial<Record<GamePhase, string>> = {
@@ -65,7 +68,11 @@ function getDemoPhase(): GamePhase | null {
     : null
 }
 
-export default function App() {
+interface PunchGameProps {
+  onHome?: () => void
+}
+
+export default function PunchGame({ onHome }: PunchGameProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const handCanvasRef = useRef<HTMLCanvasElement>(null)
   const threeCanvasRef = useRef<HTMLCanvasElement>(null)
@@ -223,6 +230,15 @@ export default function App() {
         ? 'Make two fists'
         : 'Fists recognized'
 
+  const returnHome = () => {
+    if (
+      inRound &&
+      !window.confirm('Leave this round and return to the game menu?')
+    )
+      return
+    onHome?.()
+  }
+
   return (
     <main className={`game-shell ${facing === 'user' ? 'user-camera' : ''}`}>
       <video ref={videoRef} className="camera-feed" playsInline muted />
@@ -272,9 +288,17 @@ export default function App() {
             ),
           )}
         </section>
+        {hud.shieldActive && (
+          <section className="shield-status" aria-label="Shield active">
+            <ShieldAlert size={17} /> Shield · {hud.shieldTime}s
+          </section>
+        )}
       </header>
 
       <nav className="game-controls" aria-label="Game controls">
+        {onHome && (
+          <IconButton label="Game menu" icon={Home} onClick={returnHome} />
+        )}
         {cameraSession && (
           <>
             <IconButton
@@ -360,6 +384,9 @@ export default function App() {
             </span>
             <span>
               <i className="dot heart" /> Extra heart
+            </span>
+            <span>
+              <i className="dot shield" /> Block one hit
             </span>
           </div>
         </section>
@@ -498,7 +525,13 @@ export default function App() {
           className="debug-toggle"
           type="button"
           aria-expanded={debug}
-          onClick={() => setDebug((value) => !value)}
+          onClick={() =>
+            setDebug((value) => {
+              const enabled = !value
+              engineRef.current?.setDebug(enabled)
+              return enabled
+            })
+          }
         >
           Debug <ChevronDown size={13} />
         </button>
