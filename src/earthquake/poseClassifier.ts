@@ -13,6 +13,8 @@ const LANDMARK = {
   rightEar: 8,
   leftShoulder: 11,
   rightShoulder: 12,
+  leftElbow: 13,
+  rightElbow: 14,
   leftWrist: 15,
   rightWrist: 16,
   leftHip: 23,
@@ -107,7 +109,16 @@ export function createCalibration(
 function dropStatus(
   observation: PoseObservation,
   calibration: PoseCalibration,
-): { lowered: boolean; kneesBent: boolean; confidence: number } {
+): {
+  lowered: boolean
+  kneesBent: boolean
+  torsoUpright: boolean
+  confidence: number
+} {
+  const shoulders = midpoint(
+    point(observation, LANDMARK.leftShoulder),
+    point(observation, LANDMARK.rightShoulder),
+  )
   const hips = midpoint(
     point(observation, LANDMARK.leftHip),
     point(observation, LANDMARK.rightHip),
@@ -124,43 +135,97 @@ function dropStatus(
     point(observation, LANDMARK.rightAnkle),
   )
   const kneeAngle = Math.max(leftAngle, rightAngle)
+  const torsoHeight = hips.y - shoulders.y
+  const torsoLean =
+    (Math.atan2(Math.abs(hips.x - shoulders.x), Math.abs(torsoHeight)) * 180) /
+    Math.PI
+  const torsoUpright =
+    torsoHeight >=
+      calibration.bodyHeight * EARTHQUAKE_CONFIG.minimumTorsoHeightRatio &&
+    torsoLean <= EARTHQUAKE_CONFIG.maximumTorsoLeanDegrees
   return {
     lowered: loweredBy >= EARTHQUAKE_CONFIG.dropHipRatio,
     kneesBent: kneeAngle <= EARTHQUAKE_CONFIG.maxBentKneeDegrees,
+    torsoUpright,
     confidence: Math.min(
       1,
-      Math.max(0, loweredBy / EARTHQUAKE_CONFIG.dropHipRatio) * 0.55 +
+      Math.max(0, loweredBy / EARTHQUAKE_CONFIG.dropHipRatio) * 0.45 +
         Math.max(
           0,
           (180 - kneeAngle) / (180 - EARTHQUAKE_CONFIG.maxBentKneeDegrees),
         ) *
-          0.45,
+          0.35 +
+        (torsoUpright ? 0.2 : 0),
     ),
   }
+}
+
+interface HeadProtectionStatus {
+  covered: boolean
+  crownCovered: boolean
+  napeCovered: boolean
 }
 
 function handsProtectHead(
   observation: PoseObservation,
   calibration: PoseCalibration,
-): boolean {
-  const leftHead = midpoint(
-    point(observation, LANDMARK.nose),
+): HeadProtectionStatus {
+  const nose = point(observation, LANDMARK.nose)
+  const ears = midpoint(
     point(observation, LANDMARK.leftEar),
-  )
-  const rightHead = midpoint(
-    point(observation, LANDMARK.nose),
     point(observation, LANDMARK.rightEar),
   )
-  const maximum =
-    calibration.shoulderWidth * EARTHQUAKE_CONFIG.handToHeadShoulderRatio
-  return (
-    point(observation, LANDMARK.leftWrist).visibility >=
-      EARTHQUAKE_CONFIG.minVisibility &&
-    point(observation, LANDMARK.rightWrist).visibility >=
-      EARTHQUAKE_CONFIG.minVisibility &&
-    distance(point(observation, LANDMARK.leftWrist), leftHead) <= maximum &&
-    distance(point(observation, LANDMARK.rightWrist), rightHead) <= maximum
+  const shoulders = midpoint(
+    point(observation, LANDMARK.leftShoulder),
+    point(observation, LANDMARK.rightShoulder),
   )
+  const crown = {
+    ...ears,
+    y:
+      Math.min(nose.y, ears.y) -
+      Math.max(calibration.shoulderWidth * 0.18, 0.018),
+  }
+  const nape = {
+    ...ears,
+    y: ears.y + (shoulders.y - ears.y) * 0.55,
+  }
+  const wrists = [
+    point(observation, LANDMARK.leftWrist),
+    point(observation, LANDMARK.rightWrist),
+  ]
+  const world = observation.worldLandmarks
+  const leftWorldEar = world?.[LANDMARK.leftEar]
+  const rightWorldEar = world?.[LANDMARK.rightEar]
+  const worldHead =
+    leftWorldEar && rightWorldEar ? midpoint(leftWorldEar, rightWorldEar) : null
+  const isCrown = (wrist: PosePoint) =>
+    wrist.visibility >= 0.45 &&
+    wrist.y <= ears.y + calibration.bodyHeight * 0.025 &&
+    distance(wrist, crown) <=
+      calibration.shoulderWidth * EARTHQUAKE_CONFIG.crownRadiusShoulderRatio
+  const isNape = (wrist: PosePoint, index: number) => {
+    const worldWrist =
+      world?.[index === 0 ? LANDMARK.leftWrist : LANDMARK.rightWrist]
+    const depthPlausible =
+      !worldWrist || !worldHead || worldWrist.z >= worldHead.z - 0.12
+    return (
+      wrist.visibility >= 0.28 &&
+      wrist.y >= ears.y + calibration.shoulderWidth * 0.07 &&
+      wrist.y <= shoulders.y + calibration.shoulderWidth * 0.2 &&
+      distance(wrist, nape) <=
+        calibration.shoulderWidth * EARTHQUAKE_CONFIG.napeRadiusShoulderRatio &&
+      depthPlausible
+    )
+  }
+  const leftCrown = isCrown(wrists[0])
+  const rightCrown = isCrown(wrists[1])
+  const leftNape = isNape(wrists[0], 0)
+  const rightNape = isNape(wrists[1], 1)
+  return {
+    covered: (leftCrown && rightNape) || (rightCrown && leftNape),
+    crownCovered: leftCrown || rightCrown,
+    napeCovered: leftNape || rightNape,
+  }
 }
 
 export function classifyPose(
@@ -191,6 +256,13 @@ export function classifyPose(
       coaching: 'Bend both knees into a safe crouch.',
       fullBodyVisible: true,
     }
+  if (!drop.torsoUpright)
+    return {
+      matched: false,
+      confidence: drop.confidence,
+      coaching: 'Stay in a lowered squat—keep your chest upright.',
+      fullBodyVisible: true,
+    }
   if (step === 'drop')
     return {
       matched: true,
@@ -199,11 +271,25 @@ export function classifyPose(
       fullBodyVisible: true,
     }
   const covered = handsProtectHead(observation, calibration)
-  if (!covered)
+  if (!covered.crownCovered)
     return {
       matched: false,
       confidence: drop.confidence * 0.7,
-      coaching: 'Bring both hands over your head and neck.',
+      coaching: 'Place one hand on top of your head.',
+      fullBodyVisible: true,
+    }
+  if (!covered.napeCovered)
+    return {
+      matched: false,
+      confidence: drop.confidence * 0.7,
+      coaching: 'Move your other hand behind your neck.',
+      fullBodyVisible: true,
+    }
+  if (!covered.covered)
+    return {
+      matched: false,
+      confidence: drop.confidence * 0.7,
+      coaching: 'Use separate hands to protect your head and neck.',
       fullBodyVisible: true,
     }
   return {

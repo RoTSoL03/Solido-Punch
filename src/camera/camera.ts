@@ -2,31 +2,79 @@ import { getPerformanceProfile } from '../performance/profile'
 
 export type FacingMode = 'user' | 'environment'
 
+export interface CameraStartOptions {
+  width?: number
+  height?: number
+  frameRate?: number
+}
+
+export interface CameraSettings {
+  width: number
+  height: number
+  frameRate: number
+  facingMode: FacingMode
+}
+
+export function cameraConstraintCandidates(
+  facing: FacingMode,
+  options: CameraStartOptions,
+): MediaStreamConstraints[] {
+  const profile =
+    options.width === undefined || options.height === undefined
+      ? getPerformanceProfile()
+      : null
+  const width = options.width ?? profile?.cameraWidth ?? 1280
+  const height = options.height ?? profile?.cameraHeight ?? 720
+  const frameRate = options.frameRate ?? 30
+  const candidates: MediaStreamConstraints[] = [
+    {
+      audio: false,
+      video: {
+        facingMode: { ideal: facing },
+        width: { ideal: width },
+        height: { ideal: height },
+        frameRate: { ideal: frameRate, max: 30 },
+      },
+    },
+  ]
+
+  if (width >= 1920 || height >= 1080) {
+    candidates.push({
+      audio: false,
+      video: {
+        facingMode: { ideal: facing },
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+        frameRate: { ideal: Math.min(frameRate, 30), max: 30 },
+      },
+    })
+  }
+
+  candidates.push({ audio: false, video: { facingMode: facing } })
+  return candidates
+}
+
 export class CameraController {
   private stream: MediaStream | null = null
   facing: FacingMode = 'user'
 
-  async start(video: HTMLVideoElement, facing = this.facing): Promise<void> {
+  async start(
+    video: HTMLVideoElement,
+    facing = this.facing,
+    options: CameraStartOptions = {},
+  ): Promise<CameraSettings> {
     this.stop()
     this.facing = facing
-    const profile = getPerformanceProfile()
-    const preferred: MediaStreamConstraints = {
-      audio: false,
-      video: {
-        facingMode: { ideal: facing },
-        width: { ideal: profile.cameraWidth },
-        height: { ideal: profile.cameraHeight },
-        frameRate: { ideal: 30, max: 30 },
-      },
+    let lastError: unknown
+    for (const constraints of cameraConstraintCandidates(facing, options)) {
+      try {
+        this.stream = await navigator.mediaDevices.getUserMedia(constraints)
+        break
+      } catch (error) {
+        lastError = error
+      }
     }
-    try {
-      this.stream = await navigator.mediaDevices.getUserMedia(preferred)
-    } catch {
-      this.stream = await navigator.mediaDevices.getUserMedia({
-        audio: false,
-        video: { facingMode: facing },
-      })
-    }
+    if (!this.stream) throw lastError
     video.srcObject = this.stream
     try {
       await video.play()
@@ -34,6 +82,13 @@ export class CameraController {
       video.srcObject = null
       this.stop()
       throw error
+    }
+    const settings = this.stream.getVideoTracks()[0]?.getSettings()
+    return {
+      width: settings?.width ?? video.videoWidth,
+      height: settings?.height ?? video.videoHeight,
+      frameRate: settings?.frameRate ?? options.frameRate ?? 30,
+      facingMode: this.facing,
     }
   }
 

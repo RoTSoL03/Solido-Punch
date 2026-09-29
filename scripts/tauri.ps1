@@ -1,6 +1,6 @@
 param(
   [Parameter(Mandatory = $true, Position = 0)]
-  [ValidateSet('dev', 'build')]
+  [ValidateSet('dev', 'build', 'test')]
   [string]$Command
 )
 
@@ -63,7 +63,9 @@ if (-not (Test-Path -LiteralPath $tauri)) {
 
 Push-Location $projectRoot
 try {
-  if ($Command -eq 'build') {
+  if ($Command -eq 'test') {
+    cargo test --manifest-path (Join-Path $projectRoot 'src-tauri\Cargo.toml')
+  } elseif ($Command -eq 'build') {
     & $tauri build --no-bundle
   } else {
     & $tauri dev

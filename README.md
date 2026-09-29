@@ -2,7 +2,7 @@
 
 An offline-ready exhibit web app for learning disaster preparedness through movement. The roster currently includes an earthquake **Drop, Cover, Hold On** challenge and the original **Solido Punch** AR game.
 
-Camera frames are processed locally. The earthquake challenge holds three successful-pose snapshots in memory for its results screen and can generate a collage only when the facilitator presses Download. Photos are cleared on replay, Home, refresh, or tab closure.
+Camera frames are processed locally. In the Tauri desktop app, a completed earthquake challenge automatically saves three lossless camera frames and a 3840×2160 collage beneath `Pictures\Resilient 4 DRRM AR Games`. Browser sessions keep the photos in memory and provide a manual collage download instead.
 
 ## Custom fist model
 
@@ -59,6 +59,15 @@ Open `http://localhost:5174`. Browsers treat localhost as a secure context for
 camera access, and this server cannot be reached from other devices.
 
 The MediaPipe WASM and hand/pose models are bundled under `public/mediapipe`, so an installed production build does not need internet access.
+
+### Drop, Cover, Hold On
+
+- Choose **Solo** or **Group** before camera access. Group mode supports 2–5 people standing side-by-side and requires the selected number of complete bodies.
+- Stand upright during calibration. **Drop** is a lowered squat with bent knees and an upright torso; kneeling and all-fours positions do not qualify.
+- **Cover** and **Hold On** require one hand on the crown of the head and the other at the nape of the neck. Either hand can take either role.
+- Group participants are tracked independently, while progress advances only when everyone performs the current action together.
+- The camera requests 1920×1080 at 30 FPS, falls back to 1280×720 or the camera default when necessary, and uses a separately downscaled image for pose inference.
+- Desktop photos are stored indefinitely in a dated session folder. The app saves only the four approved PNG filenames and does not receive general filesystem access.
 
 ## Exhibit setup
 

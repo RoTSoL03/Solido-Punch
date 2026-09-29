@@ -2,15 +2,33 @@ import {
   Camera,
   Check,
   Download,
+  HardDrive,
   Home,
   RefreshCw,
   Star,
+  Users,
   Volume2,
   VolumeX,
 } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { CameraController, friendlyCameraError } from '../camera/camera'
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+} from 'react'
+import {
+  CameraController,
+  friendlyCameraError,
+  type CameraSettings,
+} from '../camera/camera'
+import { videoPointToView } from '../math/coordinates'
 import { EARTHQUAKE_CONFIG, POSE_STEPS } from './config'
+import {
+  allParticipantsMatch,
+  areParticipantsFramed,
+  trackingLossWithinGrace,
+} from './groupRules'
 import { createResultCollage } from './collage'
 import {
   classifyPose,
@@ -19,13 +37,19 @@ import {
   starsForTime,
 } from './poseClassifier'
 import { PoseVision } from './poseVision'
+import { PoseIdentityTracker } from './poseTracker'
+import { shouldActivatePoseFallback } from './performance'
+import { canAutoSavePhotos, saveEarthquakeSession } from './saveSession'
 import type {
+  EarthquakeMode,
   EarthquakePhase,
   EarthquakeResult,
   EarthquakeStep,
   PoseCalibration,
   PoseCapture,
+  PoseDiagnostics,
   PoseObservation,
+  TrackedPose,
 } from './types'
 
 interface EarthquakeGameProps {
@@ -59,6 +83,10 @@ const STEP_COPY: Record<
 }
 
 const CONNECTIONS = [
+  [0, 7],
+  [0, 8],
+  [7, 11],
+  [8, 12],
   [11, 12],
   [11, 13],
   [13, 15],
@@ -72,6 +100,8 @@ const CONNECTIONS = [
   [24, 26],
   [26, 28],
 ] as const
+
+const POSE_COLORS = ['#00aeee', '#ffdf66', '#5ef0a9', '#ff7a68', '#c98cff']
 
 const SOLIDO_POSE_IMAGES: Record<EarthquakeStep, string> = {
   drop: `${import.meta.env.BASE_URL}characters/Solido_Drop.png`,
@@ -94,6 +124,8 @@ function demoResult(): EarthquakeResult {
       reactionSeconds: [3.2, 3.7, 3.9][index],
       dataUrl: demoImage(STEP_COPY[step].label, '#00AEEE'),
     })),
+    mode: 'solo',
+    participantCount: 1,
   }
 }
 
@@ -107,44 +139,61 @@ function Coach({ step }: { step: EarthquakeStep }) {
   )
 }
 
-function drawPose(
+function drawPoses(
   canvas: HTMLCanvasElement,
-  observation: PoseObservation | null,
+  poses: TrackedPose[],
+  video: HTMLVideoElement,
 ) {
   const context = canvas.getContext('2d')
   const width = canvas.clientWidth
   const height = canvas.clientHeight
-  if (canvas.width !== width || canvas.height !== height) {
-    canvas.width = width
-    canvas.height = height
+  const pixelRatio = Math.min(window.devicePixelRatio || 1, 1.5)
+  if (
+    canvas.width !== Math.round(width * pixelRatio) ||
+    canvas.height !== Math.round(height * pixelRatio)
+  ) {
+    canvas.width = Math.round(width * pixelRatio)
+    canvas.height = Math.round(height * pixelRatio)
   }
-  context?.clearRect(0, 0, width, height)
-  if (!context || !observation) return
-  context.save()
-  context.strokeStyle = 'rgba(100, 239, 255, .82)'
-  context.fillStyle = '#00aeee'
-  context.lineWidth = Math.max(3, width / 320)
-  for (const [from, to] of CONNECTIONS) {
-    const a = observation.landmarks[from]
-    const b = observation.landmarks[to]
-    if (!a || !b || a.visibility < 0.45 || b.visibility < 0.45) continue
-    context.beginPath()
-    context.moveTo((1 - a.x) * width, a.y * height)
-    context.lineTo((1 - b.x) * width, b.y * height)
-    context.stroke()
-  }
-  for (const landmark of observation.landmarks) {
-    if (landmark.visibility < 0.55) continue
-    context.beginPath()
-    context.arc(
-      (1 - landmark.x) * width,
-      landmark.y * height,
-      4,
-      0,
-      Math.PI * 2,
+  if (!context) return
+  context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0)
+  context.clearRect(0, 0, width, height)
+  if (!poses.length || !video.videoWidth || !video.videoHeight) return
+  const map = (landmark: { x: number; y: number }) =>
+    videoPointToView(
+      landmark,
+      { x: video.videoWidth, y: video.videoHeight },
+      { x: width, y: height },
+      true,
     )
-    context.fill()
-  }
+  context.save()
+  context.lineWidth = Math.max(3, width / 320)
+  poses.forEach((pose, poseIndex) => {
+    const observation = pose.observation
+    const color = POSE_COLORS[poseIndex % POSE_COLORS.length]
+    context.strokeStyle = color
+    context.fillStyle = color
+    context.globalAlpha = pose.staleMs > 0 ? 0.4 : 0.88
+    for (const [from, to] of CONNECTIONS) {
+      const a = observation.landmarks[from]
+      const b = observation.landmarks[to]
+      if (!a || !b || a.visibility < 0.35 || b.visibility < 0.35) continue
+      const start = map(a)
+      const end = map(b)
+      context.beginPath()
+      context.moveTo(start.x * width, start.y * height)
+      context.lineTo(end.x * width, end.y * height)
+      context.stroke()
+    }
+    for (const landmark of observation.landmarks) {
+      if (landmark.visibility < 0.45) continue
+      const position = map(landmark)
+      context.beginPath()
+      context.arc(position.x * width, position.y * height, 4, 0, Math.PI * 2)
+      context.fill()
+    }
+  })
+  context.globalAlpha = 1
   context.restore()
 }
 
@@ -172,18 +221,30 @@ export function EarthquakeGame({
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const cameraRef = useRef(new CameraController())
   const visionRef = useRef(new PoseVision())
+  const poseTrackerRef = useRef(new PoseIdentityTracker())
   const soundRef = useRef(sound)
   const frameRef = useRef(0)
   const phaseRef = useRef<EarthquakePhase>(initialPhase)
   const stepRef = useRef<EarthquakeStep>(initialStep)
-  const calibrationRef = useRef<PoseCalibration | null>(null)
-  const calibrationSamples = useRef<PoseObservation[]>([])
+  const modeRef = useRef<EarthquakeMode>('solo')
+  const groupSizeRef = useRef(2)
+  const calibrationsRef = useRef(new Map<number, PoseCalibration>())
+  const calibrationSamples = useRef(new Map<number, PoseObservation[]>())
   const calibrationStarted = useRef(0)
   const stableStarted = useRef(0)
   const promptStarted = useRef(0)
   const roundStarted = useRef(0)
-  const lastObservation = useRef<PoseObservation | null>(null)
+  const latestPoses = useRef<TrackedPose[]>([])
+  const lastUiUpdate = useRef(0)
+  const lastDiagnosticUpdate = useRef(0)
+  const lastRenderFrame = useRef(0)
+  const smoothedFps = useRef(30)
+  const trackingStarted = useRef(0)
+  const fallbackPending = useRef(false)
+  const performanceModeRef = useRef(false)
   const capturesRef = useRef<PoseCapture[]>([])
+  const [mode, setModeState] = useState<EarthquakeMode>('solo')
+  const [groupSize, setGroupSizeState] = useState(2)
   const [phase, setPhaseState] = useState<EarthquakePhase>(initialPhase)
   const [step, setStepState] = useState<EarthquakeStep>(initialStep)
   const [fullBody, setFullBody] = useState(demo === 'earthquake-framing')
@@ -191,6 +252,19 @@ export function EarthquakeGame({
     'Step back until your whole body is in the frame.',
   )
   const [holdProgress, setHoldProgress] = useState(0)
+  const [trackedCount, setTrackedCount] = useState(0)
+  const [participantMatches, setParticipantMatches] = useState<boolean[]>([])
+  const [cameraSettings, setCameraSettings] = useState<CameraSettings | null>(
+    null,
+  )
+  const [diagnostics, setDiagnostics] = useState<PoseDiagnostics>({
+    inferenceMs: 0,
+    model: 'full',
+    delegate: 'GPU',
+    inputWidth: 960,
+    inputHeight: 540,
+  })
+  const [performanceMode, setPerformanceMode] = useState(false)
   const [error, setError] = useState(
     demo === 'earthquake-error'
       ? 'Camera access was blocked. Allow permission, then try again.'
@@ -202,6 +276,9 @@ export function EarthquakeGame({
   )
   const [exporting, setExporting] = useState(false)
   const [exportError, setExportError] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [savePath, setSavePath] = useState('')
+  const [saveError, setSaveError] = useState('')
 
   useEffect(() => {
     soundRef.current = sound
@@ -216,6 +293,16 @@ export function EarthquakeGame({
     stepRef.current = value
     setStepState(value)
   }, [])
+
+  const setMode = (value: EarthquakeMode) => {
+    modeRef.current = value
+    setModeState(value)
+  }
+
+  const setGroupSize = (value: number) => {
+    groupSizeRef.current = value
+    setGroupSizeState(value)
+  }
 
   const beep = useCallback((frequency = 620) => {
     if (!soundRef.current) return
@@ -254,6 +341,26 @@ export function EarthquakeGame({
     [],
   )
 
+  const saveCompletedResult = useCallback(
+    async (completed: EarthquakeResult) => {
+      if (!canAutoSavePhotos()) return
+      setSaving(true)
+      setSaveError('')
+      try {
+        setSavePath(await saveEarthquakeSession(completed))
+      } catch (value) {
+        setSaveError(
+          value instanceof Error
+            ? value.message
+            : 'The photos could not be saved automatically.',
+        )
+      } finally {
+        setSaving(false)
+      }
+    },
+    [],
+  )
+
   const completeStep = useCallback(
     (now: number) => {
       const currentStep = stepRef.current
@@ -268,16 +375,21 @@ export function EarthquakeGame({
         setPhase('demonstrate')
       } else {
         const totalSeconds = (now - roundStarted.current) / 1000
-        setResult({
+        const completed: EarthquakeResult = {
           totalSeconds,
           stars: starsForTime(totalSeconds),
           captures: capturesRef.current,
-        })
+          mode: modeRef.current,
+          participantCount:
+            modeRef.current === 'group' ? groupSizeRef.current : 1,
+        }
+        setResult(completed)
         cameraRef.current.stop()
         setPhase('results')
+        void saveCompletedResult(completed)
       }
     },
-    [beep, captureFrame, setPhase, setStep],
+    [beep, captureFrame, saveCompletedResult, setPhase, setStep],
   )
 
   useEffect(() => {
@@ -293,44 +405,88 @@ export function EarthquakeGame({
     return () => window.clearTimeout(timeout)
   }, [beep, demo, phase, setPhase])
 
-  const processObservation = useCallback(
-    (observation: PoseObservation, now: number) => {
-      lastObservation.current = observation
-      drawPose(canvasRef.current!, observation)
+  const processObservations = useCallback(
+    (poses: TrackedPose[], now: number) => {
+      const expected = modeRef.current === 'group' ? groupSizeRef.current : 1
+      const fresh = poses.filter(({ staleMs }) => staleMs === 0)
+      const updateUi = now - lastUiUpdate.current >= 100
+      if (updateUi) {
+        lastUiUpdate.current = now
+        setTrackedCount(fresh.length)
+      }
       if (phaseRef.current === 'framing') {
-        setFullBody(isFullBodyVisible(observation))
+        const ready = areParticipantsFramed(poses, expected)
+        if (updateUi) setFullBody(ready)
         return
       }
       if (phaseRef.current === 'calibrating') {
-        if (isFullBodyVisible(observation))
-          calibrationSamples.current.push(observation)
+        for (const pose of fresh) {
+          if (!isFullBodyVisible(pose.observation)) continue
+          const samples = calibrationSamples.current.get(pose.id) ?? []
+          samples.push(pose.observation)
+          calibrationSamples.current.set(pose.id, samples)
+        }
         if (
           now - calibrationStarted.current >=
           EARTHQUAKE_CONFIG.calibrationMs
         ) {
-          const calibration = createCalibration(calibrationSamples.current)
-          if (!calibration) {
-            setCoaching('We lost your full body. Step back and try again.')
+          const calibrations = new Map<number, PoseCalibration>()
+          for (const pose of fresh) {
+            const calibration = createCalibration(
+              calibrationSamples.current.get(pose.id) ?? [],
+            )
+            if (calibration) calibrations.set(pose.id, calibration)
+          }
+          if (fresh.length !== expected || calibrations.size !== expected) {
+            setCoaching(
+              `We need all ${expected} full ${expected === 1 ? 'body' : 'bodies'}. Step back and try again.`,
+            )
             setPhase('framing')
             return
           }
-          calibrationRef.current = calibration
+          calibrationsRef.current = calibrations
           roundStarted.current = 0
           setStep('drop')
           setPhase('demonstrate')
         }
         return
       }
-      if (phaseRef.current !== 'matching' || !calibrationRef.current) return
-      const match = classifyPose(
-        stepRef.current,
-        observation,
-        calibrationRef.current,
+      if (phaseRef.current !== 'matching' || !calibrationsRef.current.size)
+        return
+      const orderedIds = [...calibrationsRef.current.keys()]
+      const current = orderedIds.map((id) =>
+        poses.find((pose) => pose.id === id),
       )
-      setCoaching(match.coaching)
-      if (!match.matched) {
+      if (current.some((pose) => !pose || pose.staleMs > 0)) {
+        const withinGrace = trackingLossWithinGrace(current)
+        if (withinGrace) return
         stableStarted.current = 0
-        setHoldProgress(0)
+        if (updateUi) {
+          setParticipantMatches(orderedIds.map(() => false))
+          setHoldProgress(0)
+          setCoaching('Keep every participant fully visible in the frame.')
+        }
+        return
+      }
+      const matches = current.map((pose, index) =>
+        classifyPose(
+          stepRef.current,
+          pose!.observation,
+          calibrationsRef.current.get(orderedIds[index])!,
+        ),
+      )
+      if (updateUi) {
+        setParticipantMatches(matches.map(({ matched }) => matched))
+        const failed = matches.findIndex(({ matched }) => !matched)
+        setCoaching(
+          failed >= 0 && expected > 1
+            ? `Player ${failed + 1}: ${matches[failed].coaching}`
+            : matches[0].coaching,
+        )
+      }
+      if (!allParticipantsMatch(matches)) {
+        stableStarted.current = 0
+        if (updateUi) setHoldProgress(0)
         return
       }
       stableStarted.current ||= now
@@ -339,7 +495,7 @@ export function EarthquakeGame({
           ? EARTHQUAKE_CONFIG.holdPoseMs
           : EARTHQUAKE_CONFIG.stablePoseMs
       const progress = Math.min(1, (now - stableStarted.current) / required)
-      setHoldProgress(progress)
+      if (updateUi) setHoldProgress(progress)
       if (progress >= 1) completeStep(now)
     },
     [completeStep, setPhase, setStep],
@@ -350,10 +506,55 @@ export function EarthquakeGame({
     const camera = cameraRef.current
     const vision = visionRef.current
     const loop = (now: number) => {
+      if (lastRenderFrame.current) {
+        const delta = Math.max(1, now - lastRenderFrame.current)
+        const fps = Math.min(120, 1000 / delta)
+        smoothedFps.current += (fps - smoothedFps.current) * 0.1
+      }
+      lastRenderFrame.current = now
       const video = videoRef.current
       if (video) {
-        const observation = vision.detect(video, now)
-        if (observation) processObservation(observation, now)
+        const observations = vision.detect(video, now)
+        if (observations !== null) {
+          latestPoses.current = poseTrackerRef.current.update(observations, now)
+          processObservations(latestPoses.current, now)
+        } else {
+          latestPoses.current = poseTrackerRef.current.getTracked(now)
+        }
+        drawPoses(canvasRef.current!, latestPoses.current, video)
+        if (now - lastDiagnosticUpdate.current >= 250) {
+          lastDiagnosticUpdate.current = now
+          setDiagnostics(vision.getDiagnostics(now))
+        }
+        const inference = vision.getAverageInferenceMs(undefined, now)
+        const activeTracking = [
+          'framing',
+          'calibrating',
+          'demonstrate',
+          'matching',
+        ].includes(phaseRef.current)
+        if (
+          shouldActivatePoseFallback({
+            activeTracking,
+            performanceMode: performanceModeRef.current,
+            fallbackPending: fallbackPending.current,
+            elapsedMs: now - trackingStarted.current,
+            inferenceMs: inference,
+            renderFps: smoothedFps.current,
+          })
+        ) {
+          fallbackPending.current = true
+          void vision
+            .activatePerformanceMode()
+            .then(() => {
+              performanceModeRef.current = true
+              setPerformanceMode(true)
+            })
+            .catch(() => undefined)
+            .finally(() => {
+              fallbackPending.current = false
+            })
+        }
       }
       frameRef.current = requestAnimationFrame(loop)
     }
@@ -364,20 +565,16 @@ export function EarthquakeGame({
         if (['consent', 'error'].includes(phaseRef.current)) {
           camera.stop()
           capturesRef.current = []
-          calibrationRef.current = {
-            hipY: 0.52,
-            bodyHeight: 0.48,
-            shoulderWidth: 0.22,
-          }
+          calibrationsRef.current = new Map([
+            [1, { hipY: 0.52, bodyHeight: 0.48, shoulderWidth: 0.22 }],
+          ])
           roundStarted.current = 0
           setStep('drop')
           setPhase('demonstrate')
         } else if (phaseRef.current === 'framing') {
-          calibrationRef.current = {
-            hipY: 0.52,
-            bodyHeight: 0.48,
-            shoulderWidth: 0.22,
-          }
+          calibrationsRef.current = new Map([
+            [1, { hipY: 0.52, bodyHeight: 0.48, shoulderWidth: 0.22 }],
+          ])
           setStep('drop')
           setPhase('demonstrate')
         } else if (phaseRef.current === 'demonstrate') {
@@ -408,6 +605,9 @@ export function EarthquakeGame({
               totalSeconds,
               stars: starsForTime(totalSeconds),
               captures: capturesRef.current,
+              mode: modeRef.current,
+              participantCount:
+                modeRef.current === 'group' ? groupSizeRef.current : 1,
             })
             cameraRef.current.stop()
             setPhase('results')
@@ -422,13 +622,27 @@ export function EarthquakeGame({
       camera.stop()
       vision.close()
     }
-  }, [demo, processObservation, setPhase, setStep])
+  }, [demo, processObservations, setPhase, setStep])
 
   const startCamera = async () => {
     setError('')
+    setSavePath('')
+    setSaveError('')
+    poseTrackerRef.current.reset()
+    latestPoses.current = []
+    calibrationsRef.current.clear()
+    performanceModeRef.current = false
+    setPerformanceMode(false)
+    const maximumPoses = modeRef.current === 'group' ? 5 : 1
+    visionRef.current.configure(maximumPoses)
     setPhase('loading')
     try {
-      await cameraRef.current.start(videoRef.current!)
+      const settings = await cameraRef.current.start(
+        videoRef.current!,
+        cameraRef.current.facing,
+        { width: 1920, height: 1080, frameRate: 30 },
+      )
+      setCameraSettings(settings)
     } catch (value) {
       cameraRef.current.stop()
       setErrorKind('camera')
@@ -438,6 +652,7 @@ export function EarthquakeGame({
     }
     try {
       await visionRef.current.initialize()
+      trackingStarted.current = performance.now()
       setPhase('framing')
     } catch {
       cameraRef.current.stop()
@@ -450,7 +665,7 @@ export function EarthquakeGame({
   }
 
   const startCalibration = () => {
-    calibrationSamples.current = []
+    calibrationSamples.current = new Map()
     calibrationStarted.current = performance.now()
     setPhase('calibrating')
   }
@@ -458,11 +673,19 @@ export function EarthquakeGame({
   const reset = () => {
     capturesRef.current = []
     setResult(null)
-    calibrationRef.current = null
+    calibrationsRef.current.clear()
+    calibrationSamples.current.clear()
+    poseTrackerRef.current.reset()
+    latestPoses.current = []
     roundStarted.current = 0
     stableStarted.current = 0
     setStep('drop')
     setFullBody(false)
+    setTrackedCount(0)
+    setParticipantMatches([])
+    setSavePath('')
+    setSaveError('')
+    setCameraSettings(null)
     cameraRef.current.stop()
     setPhase('consent')
   }
@@ -499,6 +722,10 @@ export function EarthquakeGame({
     } finally {
       setExporting(false)
     }
+  }
+
+  const retrySave = () => {
+    if (result) void saveCompletedResult(result)
   }
 
   const activeCamera = [
@@ -559,12 +786,48 @@ export function EarthquakeGame({
             Follow Solido and complete all three safety actions as quickly and
             accurately as you can.
           </p>
+          <div className="earthquake-mode-picker" aria-label="Challenge mode">
+            <button
+              type="button"
+              className={mode === 'solo' ? 'active' : ''}
+              onClick={() => setMode('solo')}
+            >
+              <span>1</span>
+              <b>Solo</b>
+              <small>One participant</small>
+            </button>
+            <button
+              type="button"
+              className={mode === 'group' ? 'active' : ''}
+              onClick={() => setMode('group')}
+            >
+              <Users />
+              <b>Group</b>
+              <small>Complete every pose together</small>
+            </button>
+          </div>
+          {mode === 'group' && (
+            <div className="group-size-picker" aria-label="Group size">
+              <span>Participants</span>
+              {[2, 3, 4, 5].map((size) => (
+                <button
+                  type="button"
+                  className={groupSize === size ? 'active' : ''}
+                  onClick={() => setGroupSize(size)}
+                  key={size}
+                >
+                  {size}
+                </button>
+              ))}
+            </div>
+          )}
           <div className="privacy-card">
-            <Camera />
+            <HardDrive />
             <span>
-              <b>Your camera stays private</b>Your three successful poses will
-              appear at the end and can be downloaded. Nothing is uploaded or
-              saved automatically.
+              <b>Your camera stays private</b>
+              {canAutoSavePhotos()
+                ? 'Completing the challenge saves three full-quality photos and a collage to this device. Nothing is uploaded.'
+                : 'Photos stay in this browser until you download the collage. Nothing is uploaded.'}
             </span>
           </div>
           <button
@@ -590,24 +853,42 @@ export function EarthquakeGame({
 
       {phase === 'framing' && (
         <section className="framing-layout">
-          <div className={`body-frame ${fullBody ? 'ready' : ''}`}>
-            <span className="frame-head" />
-            <span className="frame-body" />
+          <div
+            className={`group-frame-guide ${fullBody ? 'ready' : ''}`}
+            aria-label={`${trackedCount} of ${mode === 'group' ? groupSize : 1} participants visible`}
+          >
+            {Array.from(
+              { length: mode === 'group' ? groupSize : 1 },
+              (_, index) => (
+                <span
+                  className={index < trackedCount ? 'detected' : ''}
+                  style={
+                    { '--pose-color': POSE_COLORS[index] } as CSSProperties
+                  }
+                  key={index}
+                >
+                  <i />
+                  Player {index + 1}
+                </span>
+              ),
+            )}
           </div>
           <div className="quake-instruction-card">
             <span className="eyebrow">STEP INTO THE SAFETY ZONE</span>
             <h2>
               {fullBody
-                ? 'Perfect—stay there!'
-                : 'We need to see your whole body'}
+                ? 'Perfect—everyone stay there!'
+                : `We need ${mode === 'group' ? `all ${groupSize} full bodies` : 'your whole body'}`}
             </h2>
             <p>
-              Stand facing the camera with your head, hands, knees, and feet
-              inside the frame.
+              Stand side-by-side facing the camera with every head, hand, knee,
+              and foot inside the frame.
             </p>
             <div className={`tracking-status ${fullBody ? 'good' : ''}`}>
               <span />
-              {fullBody ? 'Full body detected' : 'Finding your full body…'}
+              {fullBody
+                ? `${trackedCount} of ${mode === 'group' ? groupSize : 1} ready`
+                : `${trackedCount} of ${mode === 'group' ? groupSize : 1} full bodies detected`}
             </div>
             <button
               className="quake-primary"
@@ -626,7 +907,10 @@ export function EarthquakeGame({
           <span className="calibration-pulse" />
           <span className="eyebrow">QUICK CALIBRATION</span>
           <h2>Stand tall and hold still</h2>
-          <p>Solido is learning your starting position.</p>
+          <p>
+            Solido is learning{' '}
+            {mode === 'group' ? 'each position' : 'your position'}.
+          </p>
         </section>
       )}
 
@@ -663,9 +947,28 @@ export function EarthquakeGame({
                 {phase === 'demonstrate' ? `Learn ${stepCopy.label}` : coaching}
               </strong>
               {phase === 'matching' && (
-                <div className="hold-meter">
-                  <i style={{ width: `${holdProgress * 100}%` }} />
-                </div>
+                <>
+                  {mode === 'group' && (
+                    <div className="participant-readiness">
+                      {Array.from({ length: groupSize }, (_, index) => (
+                        <span
+                          className={participantMatches[index] ? 'ready' : ''}
+                          style={
+                            {
+                              '--pose-color': POSE_COLORS[index],
+                            } as CSSProperties
+                          }
+                          key={index}
+                        >
+                          P{index + 1}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  <div className="hold-meter">
+                    <i style={{ width: `${holdProgress * 100}%` }} />
+                  </div>
+                </>
               )}
             </div>
             <div className="safety-tip">
@@ -733,6 +1036,20 @@ export function EarthquakeGame({
               <Home /> Game menu
             </button>
           </div>
+          {saving && <p className="save-status">Saving full-quality photos…</p>}
+          {savePath && (
+            <p className="save-status success">
+              <HardDrive /> Saved locally to <b>{savePath}</b>
+            </p>
+          )}
+          {saveError && (
+            <div className="save-status error" role="alert">
+              <span>{saveError}</span>
+              <button type="button" onClick={retrySave} disabled={saving}>
+                Retry save
+              </button>
+            </div>
+          )}
           {exportError && (
             <p className="export-error" role="alert">
               {exportError}
@@ -767,6 +1084,20 @@ export function EarthquakeGame({
             Try again
           </button>
         </section>
+      )}
+
+      {activeCamera && (
+        <aside className="quake-diagnostics" aria-label="Tracking diagnostics">
+          <span>
+            Camera {cameraSettings?.width ?? '—'}×
+            {cameraSettings?.height ?? '—'}
+          </span>
+          <span>{Math.round(diagnostics.inferenceMs)} ms inference</span>
+          <span>
+            {diagnostics.model} · {diagnostics.delegate}
+          </span>
+          {performanceMode && <b>Performance mode</b>}
+        </aside>
       )}
     </main>
   )
